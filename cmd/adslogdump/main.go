@@ -50,7 +50,7 @@ func main() {
 
 	f, err := os.Create(outPath)
 	if err != nil {
-		slog.Error("Failed to create output file", "path", outPath, "error", err)
+		slog.Error("Failed to create output file", "file", outPath, "error", err)
 		os.Exit(1)
 	}
 	defer f.Close()
@@ -65,7 +65,7 @@ func main() {
 	}, nil)
 
 	if err := client.Connect(); err != nil {
-		slog.Error("Failed to connect to ADS router", "error", err)
+		slog.Error("Failed to connect to ADS router", "target", *targetNetID, "router_host", *routerHost, "router_port", *routerPort, "error", err)
 		os.Exit(1)
 	}
 	defer client.Disconnect()
@@ -73,20 +73,20 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	var opts adslogger.Options
+	opts := adslogger.Options{Logger: slog.Default()}
 	if *debug {
 		opts.RawHook = func(raw []byte) {
 			preview := raw
 			if len(preview) > 64 {
 				preview = preview[:64]
 			}
-			fmt.Fprintf(os.Stderr, "[DEBUG] raw notification: %d bytes | %s\n", len(raw), hex.EncodeToString(preview))
+			slog.Debug("adslogger: raw notification", "bytes", len(raw), "hex_prefix", hex.EncodeToString(preview))
 		}
 	}
 
 	ch, err := adslogger.Subscribe(ctx, client, opts)
 	if err != nil {
-		slog.Error("Failed to subscribe to ADS logger", "error", err)
+		slog.Error("Failed to subscribe to ADS logger", "target", *targetNetID, "error", err)
 		os.Exit(1)
 	}
 
@@ -102,7 +102,7 @@ func main() {
 			entry.Message,
 		)
 		if err := enc.Encode(entry); err != nil {
-			slog.Warn("Failed to encode entry", "error", err)
+			slog.Warn("Failed to encode entry", "file", outPath, "sender", entry.Sender, "timestamp", entry.Timestamp, "error", err)
 		}
 		count++
 	}

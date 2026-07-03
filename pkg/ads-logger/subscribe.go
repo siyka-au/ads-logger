@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -36,6 +37,12 @@ type Options struct {
 	// Useful for debugging truncation: print len(raw) to see how many bytes
 	// TwinCAT actually sent.
 	RawHook func(raw []byte)
+
+	// Logger receives diagnostics for conditions the caller cannot otherwise
+	// observe: decode failures, dropped entries (consumer channel full), and
+	// failed consumer-registration keepalives. Defaults to a no-op logger, so
+	// this package never writes to a global log target uninvited.
+	Logger *slog.Logger
 }
 
 // Subscribe registers an ADS notification on the TwinCAT logger port (100) and
@@ -53,6 +60,10 @@ func Subscribe(ctx context.Context, client *ads.Client, opts ...Options) (<-chan
 	if len(opts) > 0 {
 		opt = opts[0]
 	}
+	logger := opt.Logger
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
 
 	ch := make(chan LogEntry, chanBuf)
 
@@ -64,11 +75,13 @@ func Subscribe(ctx context.Context, client *ads.Client, opts ...Options) (<-chan
 			}
 			entry, err := decode(data.RawValue)
 			if err != nil {
+				logger.Debug("adslogger: failed to decode notification", "raw_len", len(data.RawValue), "error", err)
 				return
 			}
 			select {
 			case ch <- entry:
 			default: // drop — consumer is lagging
+				logger.Debug("adslogger: dropped log entry, consumer channel full", "chan_cap", chanBuf)
 			}
 		},
 		// Match TwinCAT XAE: ServerCycle (mode 3) with CycleTime=0 means TwinCAT
@@ -93,8 +106,12 @@ func Subscribe(ctx context.Context, client *ads.Client, opts ...Options) (<-chan
 
 	// sendConsumerReg sends the IG=0x0000F090 registration to the logger port.
 	// TwinCAT responds with 4 bytes (consumer count); we discard the response.
+	// A failure here means TwinCAT will silently revert to 73-byte compact
+	// notifications instead of full-length messages once the registration lapses.
 	sendConsumerReg := func() {
-		_, _ = client.ReadWriteRawBinary(loggerPort, igLoggerConsumer, 0x00000000, 4, regPayload)
+		if _, err := client.ReadWriteRawBinary(loggerPort, igLoggerConsumer, 0x00000000, 4, regPayload); err != nil {
+			logger.Warn("adslogger: consumer registration failed, TwinCAT may revert to compact notifications", "error", err)
+		}
 	}
 
 	// Register immediately so the first notifications already use the full format.
